@@ -1,27 +1,13 @@
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Cell, Row, Table};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::app::{App, Focus, TableDensity};
+use crate::ui::theme::*;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    if app.rows.is_empty() && app.headers.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("[ data ]")
-            .style(Style::default().fg(Color::Blue));
-        let msg = if app.engine.is_none() {
-            "No file open. Press 'o' to open a parquet file or folder, or pass a path as argument."
-        } else if app.selected_fields.is_empty() {
-            "No fields selected. Press 'f' to select fields."
-        } else {
-            "No data to display."
-        };
-        let para = ratatui::widgets::Paragraph::new(msg)
-            .block(block)
-            .style(Style::default().fg(Color::DarkGray));
-        f.render_widget(para, area);
+    if draw_empty_state(f, area, app) {
         return;
     }
 
@@ -46,7 +32,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .map(|i| {
             let mut cell = Cell::from(header_label(app, i));
             if app.cursor_visible && global_col_index(app, i) == app.cursor_col {
-                cell = cell.style(Style::default().fg(Color::Black).bg(Color::Yellow));
+                cell = cell.style(Style::default().fg(TEXT_BLACK).bg(BG_CURSOR));
             }
             cell
         })
@@ -66,11 +52,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                             let is_col = global_col_index(app, col_index) == app.cursor_col;
                             style = match (is_row, is_col) {
                                 (true, true) => Style::default()
-                                    .fg(Color::Black)
-                                    .bg(Color::Yellow)
-                                    .add_modifier(Modifier::BOLD),
-                                (true, false) => Style::default().bg(Color::DarkGray),
-                                (false, true) => Style::default().fg(Color::Yellow),
+                                    .fg(TEXT_BLACK)
+                                    .bg(BG_CURSOR)
+                                    .add_modifier(MOD_CURSOR),
+                                (true, false) => Style::default().bg(BG_HIGHLIGHT),
+                                (false, true) => Style::default().fg(SORTED_COL),
                                 (false, false) => Style::default(),
                             };
                         }
@@ -84,9 +70,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     .header(
         Row::new(header_cells).style(
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+                .fg(TEXT_BLACK)
+                .bg(BG_HEADER)
+                .add_modifier(MOD_HEADER),
         ),
     )
     .block(
@@ -106,20 +92,18 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 }
             ))
             .style(if app.focus == Focus::Table {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(FOCUSED).add_modifier(MOD_FOCUSED)
             } else {
-                Style::default().fg(Color::Blue)
+                Style::default().fg(FOCUS_TABLE_UNFOCUSED)
             }),
     )
-    .row_highlight_style(Style::default().bg(Color::DarkGray));
+    .row_highlight_style(Style::default().bg(BG_HIGHLIGHT));
 
     f.render_widget(table, area);
 }
 
 fn global_col_index(app: &App, local: usize) -> usize {
-    if app.sql_query.trim().is_empty() {
+    if app.is_table_mode() {
         app.visible_col_start.saturating_add(local)
     } else {
         local
@@ -127,7 +111,7 @@ fn global_col_index(app: &App, local: usize) -> usize {
 }
 
 fn local_cursor_col(app: &App) -> usize {
-    if app.sql_query.trim().is_empty() {
+    if app.is_table_mode() {
         app.cursor_col.saturating_sub(app.visible_col_start)
     } else {
         app.cursor_col
@@ -136,7 +120,7 @@ fn local_cursor_col(app: &App) -> usize {
 }
 
 fn local_col_scroll(app: &App) -> usize {
-    if app.sql_query.trim().is_empty() {
+    if app.is_table_mode() {
         app.col_scroll.saturating_sub(app.visible_col_start)
     } else {
         app.col_scroll
@@ -264,4 +248,45 @@ fn header_label(app: &App, index: usize) -> String {
         }
     }
     label
+}
+
+fn draw_empty_state(f: &mut Frame, area: Rect, app: &App) -> bool {
+    if let Some(ref _engine) = app.engine {
+        if app.total_columns() == 0 {
+            let text = "No fields selected — press Ctrl+F to select fields";
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(EMPTY_BLOCK));
+            let paragraph = Paragraph::new(text)
+                .block(block)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(EMPTY_DATA));
+            f.render_widget(paragraph, area);
+            return true;
+        }
+        if app.headers.is_empty() {
+            let text = "No data — check your query or try pressing Ctrl+L to reset";
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(EMPTY_BLOCK));
+            let paragraph = Paragraph::new(text)
+                .block(block)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(EMPTY_DATA));
+            f.render_widget(paragraph, area);
+            return true;
+        }
+    } else {
+        let text = "Open a file to start browsing — press Ctrl+P";
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(EMPTY_BLOCK));
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(EMPTY_DATA));
+        f.render_widget(paragraph, area);
+        return true;
+    }
+    false
 }

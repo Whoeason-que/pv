@@ -1,9 +1,13 @@
 pub mod metadata;
+pub mod sql_utils;
 pub mod types;
+
+pub use sql_utils::{escape_sql_string, make_column_safe};
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use duckdb::Connection;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub const SOURCE_VIEW_NAME: &str = "pv_data";
@@ -12,8 +16,6 @@ pub const SOURCE_VIEW_NAME: &str = "pv_data";
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
-    #[allow(dead_code)]
-    pub duckdb_type: String,
 }
 
 #[derive(Debug, Clone)]
@@ -91,11 +93,6 @@ impl ParquetEngine {
         &self.path
     }
 
-    #[allow(dead_code)]
-    pub fn is_folder(&self) -> bool {
-        self.is_folder
-    }
-
     pub fn fields(&self) -> &[Field] {
         &self.fields
     }
@@ -118,24 +115,9 @@ impl ParquetEngine {
         }
     }
 
-    /// Borrow the underlying connection (for metadata queries).
-    pub fn conn(&self) -> &Connection {
-        &self.conn
-    }
-
-    /// Read rows with optional field selection, WHERE filter, offset and limit.
-    /// Returns a vector of rows, each row being a vector of string-formatted cell values.
-    #[allow(dead_code)]
-    pub fn read_rows(
-        &self,
-        selected_fields: &[String],
-        where_filter: Option<&str>,
-        offset: i64,
-        limit: i64,
-    ) -> Result<Vec<Vec<String>>> {
-        Ok(self
-            .read_rows_query(selected_fields, where_filter, offset, limit, None)?
-            .rows)
+    /// Load metadata for the current parquet file/folder.
+    pub fn load_metadata(&self) -> Result<metadata::ParquetMetadata> {
+        metadata::ParquetMetadata::load(&self.conn, &self.read_path_spec())
     }
 
     pub fn read_rows_query(
@@ -166,7 +148,7 @@ impl ParquetEngine {
         );
 
         if let Some(filter) = where_filter {
-            let filter = strip_where_prefix(filter.trim());
+            let filter = strip_optional_where_prefix(filter.trim());
             if !filter.is_empty() {
                 query.push_str(" WHERE ");
                 query.push_str(filter);
@@ -188,7 +170,7 @@ impl ParquetEngine {
         limit: i64,
         sort: Option<&SortSpec>,
     ) -> Result<QueryResult> {
-        let sql = normalize_user_select_sql(sql)?;
+        let sql = validate_and_trim_sql(sql)?;
         let mut query = format!("SELECT * FROM ({}) AS pv_query", sql);
         let col_count = query_column_count(&self.conn, &query)?;
         push_sort_clause(&mut query, sort, col_count)?;
@@ -197,25 +179,10 @@ impl ParquetEngine {
     }
 
     pub fn count_sql(&self, sql: &str) -> Result<i64> {
-        let sql = normalize_user_select_sql(sql)?;
+        let sql = validate_and_trim_sql(sql)?;
         let query = format!("SELECT count(*) FROM ({}) AS pv_count", sql);
         let count: i64 = self.conn.query_row(&query, [], |row| row.get(0))?;
         Ok(count)
-    }
-
-    /// Generate a CREATE TABLE SQL script from the current schema.
-    #[allow(dead_code)]
-    pub fn create_table_script(&self, table_name: &str) -> Result<String> {
-        let table_name = make_column_safe(table_name);
-        let mut sql = format!("CREATE TABLE {} (\n", table_name);
-        let lines: Vec<String> = self
-            .fields
-            .iter()
-            .map(|f| format!("    {} {}", make_column_safe(&f.name), f.duckdb_type))
-            .collect();
-        sql.push_str(&lines.join(",\n"));
-        sql.push_str("\n);");
-        Ok(sql)
     }
 }
 
@@ -232,7 +199,9 @@ fn register_source_view(conn: &Connection, read_path: &str) -> Result<()> {
 fn run_query(conn: &Connection, query: &str) -> Result<QueryResult> {
     let mut stmt = conn.prepare(query)?;
     let mut rows = stmt.query([])?;
-    let stmt = rows.as_ref().expect("query statement should be available");
+    let stmt = rows
+        .as_ref()
+        .context("query statement should be available")?;
     let col_count = stmt.column_count();
     let headers = stmt.column_names();
 
@@ -256,10 +225,10 @@ fn query_column_count(conn: &Connection, query: &str) -> Result<usize> {
     let wrapped = format!("SELECT * FROM ({}) AS pv_columns LIMIT 0", query);
     let mut stmt = conn.prepare(&wrapped)?;
     let rows = stmt.query([])?;
-    Ok(rows
+    let stmt = rows
         .as_ref()
-        .expect("query statement should be available")
-        .column_count())
+        .context("query statement should be available")?;
+    Ok(stmt.column_count())
 }
 
 fn push_sort_clause(query: &mut String, sort: Option<&SortSpec>, col_count: usize) -> Result<()> {
@@ -280,7 +249,7 @@ fn push_sort_clause(query: &mut String, sort: Option<&SortSpec>, col_count: usiz
     Ok(())
 }
 
-fn normalize_user_select_sql(sql: &str) -> Result<String> {
+fn validate_and_trim_sql(sql: &str) -> Result<String> {
     let trimmed = sql.trim().trim_end_matches(';').trim();
     if trimmed.is_empty() {
         bail!("SQL query is empty");
@@ -292,7 +261,7 @@ fn normalize_user_select_sql(sql: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn strip_where_prefix(filter: &str) -> &str {
+fn strip_optional_where_prefix(filter: &str) -> &str {
     let trimmed = filter.trim();
     if trimmed.len() >= 5
         && trimmed
@@ -310,11 +279,7 @@ fn describe_fields(conn: &Connection, read_path: &str) -> Result<Vec<Field>> {
     let mut stmt = conn.prepare(&query)?;
     let rows = stmt.query_map([], |row| {
         let name: String = row.get(0)?;
-        let type_name: String = row.get(1)?;
-        Ok(Field {
-            name,
-            duckdb_type: type_name,
-        })
+        Ok(Field { name })
     })?;
 
     let mut fields = Vec::new();
@@ -346,7 +311,12 @@ fn count_partitions(dir: &Path) -> Result<i64> {
 fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut result = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
+    let mut visited = HashSet::new();
     while let Some(d) = stack.pop() {
+        let canon = d.canonicalize().unwrap_or_else(|_| d.clone());
+        if !visited.insert(canon) {
+            continue;
+        }
         for entry in
             std::fs::read_dir(&d).with_context(|| format!("Reading dir: {}", d.display()))?
         {
@@ -362,20 +332,19 @@ fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(result)
 }
 
-/// Escape single quotes in a string for safe use inside a DuckDB single-quoted string literal.
-fn escape_sql_string(s: &str) -> String {
-    s.replace('\'', "''")
-}
-
-/// Escape a column name for safe use in DuckDB SQL by wrapping in double quotes.
-pub fn make_column_safe(column_name: &str) -> String {
-    let escaped = column_name.replace('"', "\"\"");
-    format!("\"{}\"", escaped)
+fn time_unit_to_nanos(unit: &duckdb::types::TimeUnit, val: &i64) -> i64 {
+    use duckdb::types::TimeUnit;
+    match unit {
+        TimeUnit::Second => val.saturating_mul(1_000_000_000),
+        TimeUnit::Millisecond => val.saturating_mul(1_000_000),
+        TimeUnit::Microsecond => val.saturating_mul(1_000),
+        TimeUnit::Nanosecond => *val,
+    }
 }
 
 /// Format a DuckDB value into a display string.
 fn format_value(v: &duckdb::types::Value) -> String {
-    use duckdb::types::{TimeUnit, Value};
+    use duckdb::types::Value;
     match v {
         Value::Null => String::new(),
         Value::Boolean(b) => b.to_string(),
@@ -403,26 +372,19 @@ fn format_value(v: &duckdb::types::Value) -> String {
             }
         }
         Value::Time64(unit, val) => {
-            let total_ns: i64 = match unit {
-                TimeUnit::Second => val.saturating_mul(1_000_000_000),
-                TimeUnit::Millisecond => val.saturating_mul(1_000_000),
-                TimeUnit::Microsecond => val.saturating_mul(1_000),
-                TimeUnit::Nanosecond => *val,
-            };
-            let seconds = (total_ns / 1_000_000_000) as u32;
-            let nanos = (total_ns % 1_000_000_000) as u32;
-            match NaiveTime::from_num_seconds_from_midnight_opt(seconds, nanos) {
+            let total_ns = time_unit_to_nanos(unit, val);
+            let seconds = total_ns / 1_000_000_000;
+            let nanos = u32::try_from(total_ns % 1_000_000_000).unwrap_or(0);
+            match NaiveTime::from_num_seconds_from_midnight_opt(
+                u32::try_from(seconds).unwrap_or(0),
+                nanos,
+            ) {
                 Some(t) => t.format("%H:%M:%S").to_string(),
                 None => format!("time({:?}, {})", unit, val),
             }
         }
         Value::Timestamp(unit, val) => {
-            let total_ns: i64 = match unit {
-                TimeUnit::Second => val.saturating_mul(1_000_000_000),
-                TimeUnit::Millisecond => val.saturating_mul(1_000_000),
-                TimeUnit::Microsecond => val.saturating_mul(1_000),
-                TimeUnit::Nanosecond => *val,
-            };
+            let total_ns = time_unit_to_nanos(unit, val);
             let secs = total_ns / 1_000_000_000;
             let nsecs = (total_ns % 1_000_000_000) as u32;
             #[allow(deprecated)]
@@ -478,4 +440,271 @@ pub fn open_engine(path: &str) -> Result<ParquetEngine> {
             e
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duckdb::types::{TimeUnit, Value};
+
+    #[test]
+    fn format_value_null() {
+        assert_eq!(format_value(&Value::Null), "");
+    }
+
+    #[test]
+    fn format_value_boolean() {
+        assert_eq!(format_value(&Value::Boolean(true)), "true");
+        assert_eq!(format_value(&Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn format_value_integers() {
+        assert_eq!(format_value(&Value::TinyInt(42)), "42");
+        assert_eq!(format_value(&Value::SmallInt(-1)), "-1");
+        assert_eq!(format_value(&Value::Int(0)), "0");
+        assert_eq!(format_value(&Value::BigInt(i64::MAX)), i64::MAX.to_string());
+        assert_eq!(format_value(&Value::UTinyInt(255)), "255");
+        assert_eq!(format_value(&Value::USmallInt(65535)), "65535");
+        assert_eq!(format_value(&Value::UInt(4_294_967_295u32)), "4294967295");
+        assert_eq!(
+            format_value(&Value::UBigInt(u64::MAX)),
+            u64::MAX.to_string()
+        );
+    }
+
+    #[test]
+    fn format_value_float_double() {
+        let float_val = format_value(&Value::Float(3.25));
+        assert!(float_val.starts_with("3.25"), "got {}", float_val);
+        let double_val = format_value(&Value::Double(0.57721));
+        assert!(double_val.starts_with("0.57721"), "got {}", double_val);
+        assert_eq!(format_value(&Value::Float(f32::INFINITY)), "inf");
+        assert_eq!(format_value(&Value::Float(f32::NEG_INFINITY)), "-inf");
+    }
+
+    #[test]
+    fn format_value_text() {
+        assert_eq!(format_value(&Value::Text("hello".to_string())), "hello");
+        assert_eq!(format_value(&Value::Text(String::new())), "");
+    }
+
+    #[test]
+    fn format_value_blob() {
+        assert_eq!(format_value(&Value::Blob(vec![1, 2, 3])), "<blob 3 bytes>");
+        assert_eq!(format_value(&Value::Blob(vec![])), "<blob 0 bytes>");
+    }
+
+    #[test]
+    fn format_value_date32() {
+        assert_eq!(format_value(&Value::Date32(0)), "1970-01-01");
+        assert_eq!(format_value(&Value::Date32(365)), "1971-01-01");
+    }
+
+    #[test]
+    fn format_value_time64() {
+        assert_eq!(
+            format_value(&Value::Time64(TimeUnit::Second, 0)),
+            "00:00:00"
+        );
+        assert_eq!(
+            format_value(&Value::Time64(TimeUnit::Second, 3600)),
+            "01:00:00"
+        );
+        assert_eq!(
+            format_value(&Value::Time64(TimeUnit::Millisecond, 5_000)),
+            "00:00:05"
+        );
+        assert_eq!(
+            format_value(&Value::Time64(TimeUnit::Microsecond, 5_000_000)),
+            "00:00:05"
+        );
+        assert_eq!(
+            format_value(&Value::Time64(TimeUnit::Nanosecond, 5_000_000_000)),
+            "00:00:05"
+        );
+    }
+
+    #[test]
+    fn format_value_timestamp() {
+        assert_eq!(
+            format_value(&Value::Timestamp(TimeUnit::Second, 0)),
+            "1970-01-01 00:00:00"
+        );
+        assert_eq!(
+            format_value(&Value::Timestamp(TimeUnit::Millisecond, 1_000)),
+            "1970-01-01 00:00:01"
+        );
+        assert_eq!(
+            format_value(&Value::Timestamp(TimeUnit::Microsecond, 1_000_000)),
+            "1970-01-01 00:00:01"
+        );
+        assert_eq!(
+            format_value(&Value::Timestamp(TimeUnit::Nanosecond, 1_000_000_000)),
+            "1970-01-01 00:00:01"
+        );
+    }
+
+    #[test]
+    fn format_value_interval() {
+        let val = Value::Interval {
+            months: 1,
+            days: 2,
+            nanos: 3,
+        };
+        assert_eq!(format_value(&val), "interval(months=1, days=2, nanos=3)");
+    }
+
+    #[test]
+    fn format_value_list() {
+        assert_eq!(
+            format_value(&Value::List(vec![Value::Int(1), Value::Int(2)])),
+            "[1, 2]"
+        );
+        assert_eq!(format_value(&Value::List(vec![])), "[]");
+    }
+
+    #[test]
+    fn format_value_struct() {
+        assert_eq!(
+            format_value(&Value::Struct(
+                vec![
+                    ("x".to_string(), Value::Int(10)),
+                    ("y".to_string(), Value::Text("z".to_string())),
+                ]
+                .into()
+            )),
+            "{x: 10, y: z}"
+        );
+        assert_eq!(format_value(&Value::Struct(vec![].into())), "{}");
+    }
+
+    #[test]
+    fn format_value_enum() {
+        assert_eq!(format_value(&Value::Enum("RED".to_string())), "RED");
+    }
+
+    #[test]
+    fn format_value_array() {
+        assert_eq!(
+            format_value(&Value::Array(vec![
+                Value::Boolean(true),
+                Value::Boolean(false)
+            ])),
+            "[true, false]"
+        );
+    }
+
+    #[test]
+    fn format_value_union() {
+        assert_eq!(
+            format_value(&Value::Union(Box::new(Value::Int(42)))),
+            "union(42)"
+        );
+    }
+
+    #[test]
+    fn escape_sql_string_no_special_chars() {
+        assert_eq!(escape_sql_string("hello"), "hello");
+    }
+
+    #[test]
+    fn escape_sql_string_with_single_quotes() {
+        assert_eq!(escape_sql_string("it's"), "it''s");
+        assert_eq!(escape_sql_string("'hello'"), "''hello''");
+        assert_eq!(escape_sql_string("'"), "''");
+    }
+
+    #[test]
+    fn escape_sql_string_empty() {
+        assert_eq!(escape_sql_string(""), "");
+    }
+
+    #[test]
+    fn validate_and_trim_sql_valid_select() {
+        assert_eq!(
+            validate_and_trim_sql("SELECT * FROM t").unwrap(),
+            "SELECT * FROM t"
+        );
+    }
+
+    #[test]
+    fn validate_and_trim_sql_valid_with() {
+        let sql = "WITH cte AS (SELECT 1) SELECT * FROM cte";
+        assert_eq!(validate_and_trim_sql(sql).unwrap(), sql);
+    }
+
+    #[test]
+    fn validate_and_trim_sql_rejects_ddl() {
+        let err = validate_and_trim_sql("DELETE FROM t").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Only SELECT/WITH queries are supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_and_trim_sql_empty() {
+        let err = validate_and_trim_sql("").unwrap_err();
+        assert!(
+            err.to_string().contains("SQL query is empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_and_trim_sql_whitespace_only() {
+        let err = validate_and_trim_sql("   ").unwrap_err();
+        assert!(
+            err.to_string().contains("SQL query is empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_and_trim_sql_trailing_semicolon() {
+        assert_eq!(
+            validate_and_trim_sql("SELECT * FROM t;").unwrap(),
+            "SELECT * FROM t"
+        );
+    }
+
+    #[test]
+    fn validate_and_trim_sql_leading_trailing_whitespace() {
+        assert_eq!(
+            validate_and_trim_sql("  SELECT * FROM t  ").unwrap(),
+            "SELECT * FROM t"
+        );
+    }
+
+    #[test]
+    fn strip_optional_where_prefix_present() {
+        assert_eq!(strip_optional_where_prefix("WHERE age > 50"), "age > 50");
+    }
+
+    #[test]
+    fn strip_optional_where_prefix_absent() {
+        assert_eq!(strip_optional_where_prefix("age > 50"), "age > 50");
+    }
+
+    #[test]
+    fn strip_optional_where_prefix_mixed_case() {
+        assert_eq!(strip_optional_where_prefix("where age > 50"), "age > 50");
+        assert_eq!(strip_optional_where_prefix("WHERE age > 50"), "age > 50");
+        assert_eq!(strip_optional_where_prefix("Where age > 50"), "age > 50");
+    }
+
+    #[test]
+    fn strip_optional_where_prefix_trimmed() {
+        assert_eq!(
+            strip_optional_where_prefix("  WHERE age > 50  "),
+            "age > 50"
+        );
+    }
+
+    #[test]
+    fn strip_optional_where_prefix_exact_where() {
+        assert_eq!(strip_optional_where_prefix("WHERE"), "");
+    }
 }

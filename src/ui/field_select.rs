@@ -1,12 +1,14 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 use crate::app::App;
+use crate::ui::centered_rect;
+use crate::ui::theme::*;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    // We store scroll in col_scroll repurposed; use a local state via app.meta_scroll
+    // We store scroll in col_scroll repurposed; use a local state via app.field_select_cursor
     let popup = centered_rect(80, 80, area);
 
     // Clear the background
@@ -19,11 +21,9 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             let selected = app.selected_fields.iter().any(|sf| sf == field);
             let check = if selected { "[x]" } else { "[ ]" };
             let style = if selected {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(SELECTED).add_modifier(MOD_FOCUSED)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(UNSELECTED)
             };
             ListItem::new(format!("{}  {}", check, field)).style(style)
         })
@@ -36,42 +36,35 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 .title(
                     "[ Select Fields — Space: toggle  a: all  n: none  Enter: apply  Esc: cancel ]",
                 )
-                .style(Style::default().fg(Color::Cyan)),
+                .style(Style::default().fg(BLOCK_TITLE)),
         )
         .highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+                .bg(BG_HIGHLIGHT)
+                .add_modifier(MOD_HIGHLIGHT),
         )
         .highlight_symbol("> ");
 
     let mut state = ListState::default();
-    let idx = (app.meta_scroll as usize).min(app.all_fields.len().saturating_sub(1));
+    let idx = app
+        .field_select_cursor
+        .min(app.all_fields.len().saturating_sub(1));
     state.select(Some(idx));
     f.render_stateful_widget(list, popup, &mut state);
-
-    // Footer hint
-    let footer_area = Rect {
-        x: popup.x,
-        y: popup.bottom().saturating_sub(1),
-        width: popup.width,
-        height: 1,
-    };
-    let _ = footer_area;
 }
 
 pub fn move_cursor(app: &mut App, delta: i32) {
-    let max = app.all_fields.len() as i32;
+    let max = app.all_fields.len();
     if max == 0 {
         return;
     }
-    let cur = app.meta_scroll as i32;
-    let new = (cur + delta).clamp(0, max - 1);
-    app.meta_scroll = new as u16;
+    let cur = app.field_select_cursor as i32;
+    let new = (cur + delta).clamp(0, max as i32 - 1);
+    app.field_select_cursor = new as usize;
 }
 
 pub fn toggle_current(app: &mut App) {
-    let idx = app.meta_scroll as usize;
+    let idx = app.field_select_cursor;
     if let Some(field) = app.all_fields.get(idx).cloned() {
         if let Some(pos) = app.selected_fields.iter().position(|f| f == &field) {
             app.selected_fields.remove(pos);
@@ -87,24 +80,4 @@ pub fn select_all(app: &mut App) {
 
 pub fn select_none(app: &mut App) {
     app.selected_fields.clear();
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
-            ratatui::layout::Constraint::Percentage(percent_y),
-            ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
-            ratatui::layout::Constraint::Percentage(percent_x),
-            ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }

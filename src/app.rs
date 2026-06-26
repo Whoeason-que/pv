@@ -67,7 +67,6 @@ pub struct OperationLog {
     pub level: OperationLevel,
     pub summary: String,
     pub detail: Option<String>,
-    pub repeat_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,8 +123,10 @@ pub struct App {
     pub cursor_col: usize,
     pub table_density: TableDensity,
 
+    /// Field select cursor
+    pub field_select_cursor: usize,
     /// Metadata view scroll
-    pub meta_scroll: u16,
+    pub meta_scroll: usize,
 
     pub operation_log: VecDeque<OperationLog>,
     pub next_operation_id: u64,
@@ -170,6 +171,7 @@ impl App {
             cursor_row: 0,
             cursor_col: 0,
             table_density: TableDensity::Fill,
+            field_select_cursor: 0,
             meta_scroll: 0,
             operation_log: VecDeque::new(),
             next_operation_id: 1,
@@ -179,6 +181,14 @@ impl App {
     }
 
     /// Open a parquet file or folder.
+    pub fn reset_scroll_state(&mut self) {
+        self.row_scroll = 0;
+        self.col_scroll = 0;
+        self.visible_col_start = 0;
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+    }
+
     pub fn open_path(&mut self, path: &str) -> Result<()> {
         let engine = crate::engine::open_engine(path)?;
         self.all_fields = engine.fields().iter().map(|f| f.name.clone()).collect();
@@ -192,11 +202,7 @@ impl App {
         self.offset = 0;
         self.sql_query.clear();
         self.sort = None;
-        self.row_scroll = 0;
-        self.col_scroll = 0;
-        self.visible_col_start = 0;
-        self.cursor_row = 0;
-        self.cursor_col = 0;
+        self.reset_scroll_state();
 
         if self.settings.always_load_all {
             self.page_size = self.record_count;
@@ -237,18 +243,13 @@ impl App {
             self.page_size
         };
 
-        if self.sql_query.trim().is_empty() {
+        if self.is_table_mode() {
             if self.selected_fields.is_empty() {
                 self.rows.clear();
                 self.headers.clear();
                 return Ok(());
             }
-            if let Some(sort) = &self.sort
-                && (sort.column_index >= self.selected_fields.len()
-                    || self.selected_fields[sort.column_index] != sort.column_name)
-            {
-                self.sort = None;
-            }
+            invalidate_sort_if_stale(&mut self.sort, &self.selected_fields);
             let visible_fields = self.visible_fields();
             let result = engine.read_rows_query(
                 &visible_fields,
@@ -261,12 +262,7 @@ impl App {
             self.rows = result.rows;
             self.record_count = self.source_record_count;
         } else {
-            if let Some(sort) = &self.sort
-                && (sort.column_index >= self.headers.len()
-                    || self.headers.get(sort.column_index) != Some(&sort.column_name))
-            {
-                self.sort = None;
-            }
+            invalidate_sort_if_stale(&mut self.sort, &self.headers);
             let result = engine.query_sql(&self.sql_query, self.offset, limit, None)?;
             self.headers = result.headers;
             self.rows = result.rows;
@@ -297,7 +293,7 @@ impl App {
     }
 
     pub fn ensure_column_window(&mut self) {
-        if !self.sql_query.trim().is_empty() || self.selected_fields.is_empty() {
+        if self.is_sql_mode() || self.selected_fields.is_empty() {
             self.visible_col_start = 0;
             return;
         }
@@ -320,8 +316,20 @@ impl App {
         }
     }
 
+    pub fn require_engine(&self) -> bool {
+        self.engine.is_some()
+    }
+
+    pub fn is_table_mode(&self) -> bool {
+        self.sql_query.trim().is_empty()
+    }
+
+    pub fn is_sql_mode(&self) -> bool {
+        !self.sql_query.trim().is_empty()
+    }
+
     pub fn total_columns(&self) -> usize {
-        if self.sql_query.trim().is_empty() {
+        if self.is_table_mode() {
             self.selected_fields.len()
         } else {
             self.headers.len()
@@ -333,53 +341,19 @@ impl App {
         let Some(engine) = &self.engine else {
             anyhow::bail!("No file is open");
         };
-        let metadata = ParquetMetadata::load(engine.conn(), &engine.read_path_spec())?;
+        let metadata = engine.load_metadata()?;
         self.metadata = Some(metadata);
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn next_page(&mut self) -> Result<()> {
-        let new_offset = self.offset + self.page_size;
-        if new_offset < self.record_count {
-            self.offset = new_offset;
-            self.reload()?;
-        } else {
-            self.set_message("Already at the last page.", false);
-        }
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn prev_page(&mut self) -> Result<()> {
-        if self.offset == 0 {
-            self.set_message("Already at the first page.", false);
-            return Ok(());
-        }
-        self.offset = (self.offset - self.page_size).max(0);
-        self.reload()?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn first_page(&mut self) -> Result<()> {
-        self.offset = 0;
-        self.cursor_row = 0;
-        self.reload()
-    }
-
     pub fn apply_sql_query(&mut self, sql: String) -> Result<()> {
+        self.sql_query = sql;
+        self.offset = 0;
+        self.reset_scroll_state();
+        self.sort = None;
         let Some(engine) = &self.engine else {
             anyhow::bail!("No file is open");
         };
-        self.sql_query = sql;
-        self.offset = 0;
-        self.row_scroll = 0;
-        self.col_scroll = 0;
-        self.visible_col_start = 0;
-        self.cursor_row = 0;
-        self.cursor_col = 0;
-        self.sort = None;
         self.record_count = engine.count_sql(&self.sql_query)?;
         self.reload()
     }
@@ -388,11 +362,7 @@ impl App {
         self.sql_query.clear();
         self.record_count = self.source_record_count;
         self.offset = 0;
-        self.row_scroll = 0;
-        self.col_scroll = 0;
-        self.visible_col_start = 0;
-        self.cursor_row = 0;
-        self.cursor_col = 0;
+        self.reset_scroll_state();
         self.sort = None;
         self.reload()
     }
@@ -410,9 +380,7 @@ impl App {
         self.record_count = self.source_record_count;
         self.sort = None;
         self.offset = 0;
-        self.visible_col_start = 0;
-        self.cursor_row = 0;
-        self.cursor_col = 0;
+        self.reset_scroll_state();
         self.reload()
     }
 
@@ -427,7 +395,7 @@ impl App {
         } else {
             self.col_scroll.min(total.saturating_sub(1))
         };
-        let name = if self.sql_query.trim().is_empty() {
+        let name = if self.is_table_mode() {
             self.selected_fields.get(idx).cloned().unwrap_or_default()
         } else {
             self.headers.get(idx).cloned().unwrap_or_default()
@@ -547,7 +515,6 @@ impl App {
             level,
             summary: summary.into(),
             detail,
-            repeat_count: 1,
         };
         self.next_operation_id += 1;
         self.operation_log.push_back(entry);
@@ -583,12 +550,6 @@ impl App {
         self.record_operation(kind, OperationOutcome::Cancelled, summary, None);
     }
 
-    #[allow(dead_code)]
-    pub fn clear_message(&mut self) {
-        self.message.clear();
-        self.message_is_error = false;
-    }
-
     pub fn enter_input_mode(&mut self, mode: Mode, prompt: &str) {
         self.mode = mode;
         self.input_prompt = prompt.to_string();
@@ -599,20 +560,13 @@ impl App {
         self.mode = Mode::Normal;
         self.input_buffer.clear();
     }
+}
 
-    /// Generate CREATE TABLE script for current schema.
-    #[allow(dead_code)]
-    pub fn create_table_script(&self) -> Result<String> {
-        let Some(engine) = &self.engine else {
-            anyhow::bail!("No file is open");
-        };
-        let name = self
-            .path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .and_then(|s| s.to_str())
-            .unwrap_or("MY_TABLE");
-        engine.create_table_script(name)
+fn invalidate_sort_if_stale(sort: &mut Option<SortSpec>, col_names: &[String]) {
+    if let Some(s) = sort
+        && (s.column_index >= col_names.len() || col_names[s.column_index] != s.column_name)
+    {
+        *sort = None;
     }
 }
 
@@ -707,15 +661,5 @@ mod tests {
         assert_eq!(app.operation_log[0].level, OperationLevel::Success);
         assert_eq!(app.operation_log[1].level, OperationLevel::Error);
         assert_eq!(app.operation_log[1].outcome, OperationOutcome::Failed);
-    }
-
-    #[test]
-    fn clear_message_keeps_operation_log() {
-        let mut app = App::new(Settings::default());
-        app.set_message("ok", false);
-        app.clear_message();
-
-        assert!(app.message.is_empty());
-        assert_eq!(app.operation_log.len(), 1);
     }
 }

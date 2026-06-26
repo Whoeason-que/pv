@@ -1,6 +1,7 @@
 use anyhow::Result;
 use duckdb::Connection;
 use serde::Serialize;
+use std::collections::VecDeque;
 
 /// A node in the parquet schema tree.
 #[derive(Debug, Clone, Serialize)]
@@ -74,7 +75,7 @@ fn load_schema_tree(conn: &Connection, read_path: &str) -> Result<SchemaNode> {
         anyhow::bail!("Failed to retrieve parquet schema");
     }
 
-    let mut nodes: Vec<SchemaNode> = rows
+    let mut nodes: VecDeque<SchemaNode> = rows
         .into_iter()
         .map(
             |(name, path, type_name, repetition_type, num_children)| SchemaNode {
@@ -88,19 +89,19 @@ fn load_schema_tree(conn: &Connection, read_path: &str) -> Result<SchemaNode> {
         )
         .collect();
 
-    let root = nodes.remove(0);
+    let root = nodes.pop_front().expect("at least root node in schema");
     let root = build_tree(root, &mut nodes);
 
     Ok(root)
 }
 
-fn build_tree(mut parent: SchemaNode, remaining: &mut Vec<SchemaNode>) -> SchemaNode {
+fn build_tree(mut parent: SchemaNode, remaining: &mut VecDeque<SchemaNode>) -> SchemaNode {
     let target_children = parent.num_children as usize;
     for _ in 0..target_children {
         if remaining.is_empty() {
             break;
         }
-        let node = remaining.remove(0);
+        let node = remaining.pop_front().expect("already checked non-empty");
         let node = if node.num_children > 0 {
             build_tree(node, remaining)
         } else {

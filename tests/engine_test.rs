@@ -1,7 +1,5 @@
-use parquet_tui::engine::metadata::ParquetMetadata;
 use parquet_tui::engine::{ParquetEngine, SortDirection, SortSpec, make_column_safe};
 use parquet_tui::export;
-use std::path::Path;
 
 fn testdata(path: &str) -> String {
     format!("{}/testdata/{}", env!("CARGO_MANIFEST_DIR"), path)
@@ -28,8 +26,9 @@ fn read_first_10_rows_all_fields() {
     let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 0, 10)
-        .expect("read_rows failed");
+        .read_rows_query(&fields, None, 0, 10, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 10, "should read exactly 10 rows");
     for (i, row) in rows.iter().enumerate() {
         assert_eq!(
@@ -50,8 +49,9 @@ fn read_rows_with_where_filter_age_gt_50() {
         .position(|f| f == "age")
         .expect("age field should exist");
     let rows = engine
-        .read_rows(&fields, Some("age > 50"), 0, 1000)
-        .expect("filtered read_rows failed");
+        .read_rows_query(&fields, Some("age > 50"), 0, 1000, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert!(!rows.is_empty(), "filter age > 50 should return some rows");
     for row in &rows {
         let age_str = &row[age_idx];
@@ -67,8 +67,9 @@ fn field_selection_id_and_name_yields_two_columns() {
     let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
     let selected = vec!["id".to_string(), "name".to_string()];
     let rows = engine
-        .read_rows(&selected, None, 0, 10)
-        .expect("read_rows with field selection failed");
+        .read_rows_query(&selected, None, 0, 10, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert!(!rows.is_empty(), "should return some rows");
     for (i, row) in rows.iter().enumerate() {
         assert_eq!(row.len(), 2, "row {} should have exactly 2 columns", i);
@@ -96,8 +97,9 @@ fn read_nested_types_does_not_panic() {
     let engine = ParquetEngine::open(testdata("nested_types.parquet")).unwrap();
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 0, 100)
-        .expect("read_rows on nested types failed");
+        .read_rows_query(&fields, None, 0, 100, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 100, "should read all 100 nested rows");
     for (i, row) in rows.iter().enumerate() {
         assert_eq!(
@@ -123,8 +125,9 @@ fn open_nullable_types_has_200_records() {
     );
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 0, 200)
-        .expect("read_rows on nullable types failed");
+        .read_rows_query(&fields, None, 0, 200, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 200);
 }
 
@@ -144,16 +147,16 @@ fn pagination_offset_500_limit_50_returns_50_rows() {
     let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 500, 50)
-        .expect("paginated read_rows failed");
+        .read_rows_query(&fields, None, 500, 50, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 50, "pagination should return exactly 50 rows");
 }
 
 #[test]
 fn metadata_schema_tree_has_children() {
     let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
-    let metadata = ParquetMetadata::load(engine.conn(), &engine.read_path_spec())
-        .expect("metadata load failed");
+    let metadata = engine.load_metadata().expect("metadata load failed");
     assert!(
         !metadata.schema_tree.children.is_empty(),
         "schema_tree root should have children"
@@ -167,40 +170,23 @@ fn metadata_schema_tree_has_children() {
 }
 
 #[test]
-fn create_table_script_contains_create_table() {
-    let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
-    let script = engine
-        .create_table_script("my_table")
-        .expect("create_table_script failed");
-    assert!(
-        script.contains("CREATE TABLE"),
-        "script should contain 'CREATE TABLE': {}",
-        script
-    );
-    assert!(
-        script.contains("\"my_table\""),
-        "script should contain the quoted table name: {}",
-        script
-    );
-}
-
-#[test]
 fn export_csv_writes_nonempty_file() {
     let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 0, 25)
-        .expect("read_rows for export failed");
+        .read_rows_query(&fields, None, 0, 25, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 25);
 
-    let path = Path::new("/tmp/test_export.csv");
-    let _ = std::fs::remove_file(path);
-    export::export(&fields, &rows, path).expect("csv export failed");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("test_export.csv");
+    export::export(&fields, &rows, &path).expect("csv export failed");
 
-    let metadata = std::fs::metadata(path).expect("exported csv file should exist");
+    let metadata = std::fs::metadata(&path).expect("exported csv file should exist");
     assert!(metadata.len() > 0, "exported csv should be non-empty");
 
-    let content = std::fs::read_to_string(path).expect("should read exported csv");
+    let content = std::fs::read_to_string(&path).expect("should read exported csv");
     assert!(
         content.contains("id") && content.contains("name"),
         "csv should contain header fields: {}",
@@ -219,15 +205,16 @@ fn export_json_writes_valid_json() {
     let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 0, 15)
-        .expect("read_rows for json export failed");
+        .read_rows_query(&fields, None, 0, 15, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 15);
 
-    let path = Path::new("/tmp/test_export.json");
-    let _ = std::fs::remove_file(path);
-    export::export(&fields, &rows, path).expect("json export failed");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("test_export.json");
+    export::export(&fields, &rows, &path).expect("json export failed");
 
-    let content = std::fs::read_to_string(path).expect("should read exported json");
+    let content = std::fs::read_to_string(&path).expect("should read exported json");
     let parsed: serde_json::Value =
         serde_json::from_str(&content).expect("exported json should be valid JSON");
     let arr = parsed
@@ -240,6 +227,24 @@ fn export_json_writes_valid_json() {
             .unwrap_or_else(|| panic!("entry {} should be a JSON object", i));
         assert_eq!(map.len(), fields.len(), "entry {} field count mismatch", i);
     }
+}
+
+#[test]
+fn export_xlsx_writes_nonempty_file() {
+    let engine = ParquetEngine::open(testdata("basic_types.parquet")).unwrap();
+    let fields = field_names(&engine);
+    let rows = engine
+        .read_rows_query(&fields, None, 0, 15, None)
+        .expect("read_rows_query for xlsx export failed")
+        .rows;
+    assert_eq!(rows.len(), 15);
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("test_export.xlsx");
+    export::export(&fields, &rows, &path).expect("xlsx export failed");
+
+    let metadata = std::fs::metadata(&path).expect("exported xlsx file should exist");
+    assert!(metadata.len() > 0, "exported xlsx should be non-empty");
 }
 
 #[test]
@@ -257,8 +262,9 @@ fn open_partitioned_folder_returns_records() {
     );
     let fields = field_names(&engine);
     let rows = engine
-        .read_rows(&fields, None, 0, 10)
-        .expect("read_rows on partitioned folder failed");
+        .read_rows_query(&fields, None, 0, 10, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(rows.len(), 10);
 }
 
@@ -292,8 +298,9 @@ fn count_sql_returns_filtered_count() {
         .count_sql("SELECT id FROM pv_data WHERE age > 50")
         .expect("count_sql failed");
     let rows = engine
-        .read_rows(&field_names(&engine), Some("age > 50"), 0, 1000)
-        .expect("read_rows failed");
+        .read_rows_query(&field_names(&engine), Some("age > 50"), 0, 1000, None)
+        .expect("read_rows_query failed")
+        .rows;
     assert_eq!(count, rows.len() as i64);
     assert!(count > 0);
 }

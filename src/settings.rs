@@ -13,17 +13,6 @@ pub struct Settings {
     pub dark_mode: bool,
     #[serde(default)]
     pub always_select_all_fields: bool,
-    #[serde(default = "default_date_format")]
-    pub date_format: DateFormat,
-    #[serde(default)]
-    pub custom_date_format: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum DateFormat {
-    Default,
-    Iso8601,
-    Custom,
 }
 
 impl Default for Settings {
@@ -33,8 +22,6 @@ impl Default for Settings {
             always_load_all: false,
             dark_mode: true,
             always_select_all_fields: false,
-            date_format: DateFormat::Default,
-            custom_date_format: None,
         }
     }
 }
@@ -45,10 +32,6 @@ fn default_page_size() -> i64 {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_date_format() -> DateFormat {
-    DateFormat::Default
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -75,14 +58,4 @@ impl Settings {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn save(&self) -> Result<()> {
-        let path = config_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let contents = serde_json::to_string_pretty(self)?;
-        fs::write(&path, contents)?;
-        Ok(())
-    }
 }

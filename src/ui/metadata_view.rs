@@ -1,10 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState};
 
 use crate::app::App;
 use crate::engine::types::format_bytes;
+use crate::ui::centered_rect;
+use crate::ui::theme::*;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let popup = centered_rect(90, 85, area);
@@ -45,7 +47,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
     let items: Vec<ListItem> = lines
         .iter()
-        .map(|l| ListItem::new(l.as_str()).style(Style::default().fg(Color::White)))
+        .map(|l| ListItem::new(l.as_str()).style(Style::default().fg(TEXT_PRIMARY)))
         .collect();
 
     let list = List::new(items)
@@ -53,12 +55,12 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("[ Metadata — j/k or ↑/↓ to scroll, Esc to close ]")
-                .style(Style::default().fg(Color::Cyan)),
+                .style(Style::default().fg(BLOCK_TITLE)),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        .highlight_style(Style::default().add_modifier(MOD_HIGHLIGHT));
 
     let mut state = ListState::default();
-    state.select(Some(app.meta_scroll as usize));
+    state.select(Some(app.meta_scroll));
     f.render_stateful_widget(list, popup, &mut state);
 }
 
@@ -81,25 +83,5 @@ fn render_schema(
 pub fn scroll(app: &mut App, delta: i32) {
     let cur = app.meta_scroll as i32;
     let new = (cur + delta).max(0);
-    app.meta_scroll = new as u16;
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
-            ratatui::layout::Constraint::Percentage(percent_y),
-            ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
-            ratatui::layout::Constraint::Percentage(percent_x),
-            ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
+    app.meta_scroll = new as usize;
 }

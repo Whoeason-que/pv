@@ -6,12 +6,35 @@ pub mod table_view;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, DEFAULT_SQL, Focus, Mode, OperationLevel};
 use crate::engine::SortDirection;
+use crate::ui::theme::*;
+
+pub mod theme;
+
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
 
 /// Draw the entire UI based on current app state.
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -49,8 +72,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(size);
 
-    draw_path_bar(f, app, chunks[0]);
-    draw_sql_bar(f, app, chunks[1]);
+    draw_input_bar(f, app, chunks[0], BarKind::Path);
+    draw_input_bar(f, app, chunks[1], BarKind::Sql);
     table_view::draw(f, app, chunks[2]);
     draw_action_bar(f, chunks[3]);
 
@@ -61,78 +84,84 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn focus_style(is_focused: bool, color: Color) -> Style {
     if is_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(FOCUSED).add_modifier(MOD_FOCUSED)
     } else {
         Style::default().fg(color)
     }
 }
 
-fn draw_path_bar(f: &mut Frame, app: &App, area: Rect) {
-    let path = if app.mode == Mode::OpenInput {
-        app.input_buffer.as_str().to_string()
-    } else {
-        app.path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "no file open".to_string())
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(if app.mode == Mode::OpenInput {
-            "[ path — Esc cancel, Enter open ]"
-        } else {
-            "[ path Ctrl+P ]"
-        })
-        .style(focus_style(app.focus == Focus::Path, Color::Blue));
-    f.render_widget(
-        Paragraph::new(path)
-            .block(block)
-            .style(Style::default().fg(Color::White)),
-        area,
-    );
-
-    if app.mode == Mode::OpenInput {
-        let cursor_x = area
-            .x
-            .saturating_add(1)
-            .saturating_add(app.input_buffer.chars().count() as u16)
-            .min(area.right().saturating_sub(2));
-        f.set_cursor_position((cursor_x, area.y.saturating_add(1)));
-    }
+enum BarKind {
+    Path,
+    Sql,
 }
 
-fn draw_sql_bar(f: &mut Frame, app: &App, area: Rect) {
-    let sql = if app.mode == Mode::SqlInput {
-        app.input_buffer.as_str()
-    } else if app.sql_query.is_empty() {
-        DEFAULT_SQL
-    } else {
-        &app.sql_query
+fn set_input_cursor(f: &mut Frame, area: Rect, input_buffer: &str) {
+    let cursor_x = area
+        .x
+        .saturating_add(1)
+        .saturating_add(input_buffer.chars().count() as u16)
+        .min(area.right().saturating_sub(2));
+    f.set_cursor_position((cursor_x, area.y.saturating_add(1)));
+}
+
+fn draw_input_bar(f: &mut Frame, app: &App, area: Rect, kind: BarKind) {
+    let (text, title, focus, cursor) = match kind {
+        BarKind::Path => {
+            let text = if app.mode == Mode::OpenInput {
+                app.input_buffer.as_str().to_string()
+            } else {
+                app.path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "no file open".to_string())
+            };
+            let title = if app.mode == Mode::OpenInput {
+                "[ path — Esc cancel, Enter open ]"
+            } else {
+                "[ path Ctrl+P ]"
+            };
+            let cursor = app.mode == Mode::OpenInput;
+            (
+                text,
+                title,
+                focus_style(app.focus == Focus::Path, FOCUS_PATH_UNFOCUSED),
+                cursor,
+            )
+        }
+        BarKind::Sql => {
+            let text = if app.mode == Mode::SqlInput {
+                app.input_buffer.as_str().to_string()
+            } else if app.is_table_mode() {
+                DEFAULT_SQL.to_string()
+            } else {
+                app.sql_query.clone()
+            };
+            let title = if app.mode == Mode::SqlInput {
+                "[ sql — Esc cancel, Enter submit ]"
+            } else {
+                "[ sql / Ctrl+S ]"
+            };
+            let cursor = app.mode == Mode::SqlInput;
+            (
+                text,
+                title,
+                focus_style(app.focus == Focus::Sql, FOCUS_SQL_UNFOCUSED),
+                cursor,
+            )
+        }
     };
-    let text = sql.to_string();
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(if app.mode == Mode::SqlInput {
-            "[ sql — Esc cancel, Enter submit ]"
-        } else {
-            "[ sql / Ctrl+S ]"
-        })
-        .style(focus_style(app.focus == Focus::Sql, Color::Magenta));
+        .title(title)
+        .style(focus);
     let paragraph = Paragraph::new(text)
         .block(block)
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(TEXT_PRIMARY));
     f.render_widget(paragraph, area);
 
-    if app.mode == Mode::SqlInput {
-        let cursor_x = area
-            .x
-            .saturating_add(1)
-            .saturating_add(app.input_buffer.chars().count() as u16)
-            .min(area.right().saturating_sub(2));
-        f.set_cursor_position((cursor_x, area.y.saturating_add(1)));
+    if cursor {
+        set_input_cursor(f, area, &app.input_buffer);
     }
 }
 
@@ -149,13 +178,11 @@ fn draw_action_bar(f: &mut Frame, area: Rect) {
     for (key, label) in actions {
         spans.push(Span::styled(
             key,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(ACTION_KEY).add_modifier(MOD_FOCUSED),
         ));
         spans.push(Span::styled(
             format!(" {}  ", label),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(ACTION_LABEL),
         ));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -165,7 +192,7 @@ fn draw_operations_view(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("[ operations — Ctrl+B/Esc to return ]")
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(OPERATIONS_INFO));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -178,9 +205,9 @@ fn draw_operations_view(f: &mut Frame, app: &App, area: Rect) {
         .take(visible_logs)
         .map(|entry| {
             let color = match entry.level {
-                OperationLevel::Info => Color::DarkGray,
-                OperationLevel::Success => Color::Green,
-                OperationLevel::Error => Color::Red,
+                OperationLevel::Info => OPERATIONS_INFO,
+                OperationLevel::Success => OPERATIONS_SUCCESS,
+                OperationLevel::Error => OPERATIONS_ERROR,
             };
             let detail = entry
                 .detail
@@ -200,12 +227,12 @@ fn draw_operations_view(f: &mut Frame, app: &App, area: Rect) {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "No operations yet",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(OPERATIONS_INFO),
         )));
     }
     lines.push(Line::from(Span::styled(
         status_summary(app),
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(STATUS_LINE),
     )));
 
     let para = Paragraph::new(lines);
@@ -213,11 +240,7 @@ fn draw_operations_view(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn status_summary(app: &App) -> String {
-    let mode = if app.sql_query.trim().is_empty() {
-        "table"
-    } else {
-        "sql"
-    };
+    let mode = if app.is_table_mode() { "table" } else { "sql" };
     let sort_info = app
         .sort
         .as_ref()

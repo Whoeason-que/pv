@@ -1,7 +1,10 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+
+use crate::ui::centered_rect;
+use crate::ui::theme::*;
 
 pub fn draw(f: &mut Frame, area: Rect) {
     let popup = centered_rect(70, 80, area);
@@ -48,11 +51,9 @@ pub fn draw(f: &mut Frame, area: Rect) {
         .into_iter()
         .map(|(text, is_header)| {
             let style = if is_header {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(HELP_HEADER).add_modifier(MOD_HEADER)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(HELP_BODY)
             };
             ratatui::text::Line::from(ratatui::text::Span::styled(text, style))
         })
@@ -62,27 +63,7 @@ pub fn draw(f: &mut Frame, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title("[ Help — press Esc or ? to close ]")
-            .style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().fg(BLOCK_TITLE)),
     );
     f.render_widget(para, popup);
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
-            ratatui::layout::Constraint::Percentage(percent_y),
-            ratatui::layout::Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
-            ratatui::layout::Constraint::Percentage(percent_x),
-            ratatui::layout::Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }

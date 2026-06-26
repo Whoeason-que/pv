@@ -186,7 +186,7 @@ fn enter_path_input(app: &mut App) {
 }
 
 fn enter_sql_input(app: &mut App) {
-    if app.engine.is_some() {
+    if app.require_engine() {
         app.log_started(OperationKind::Sql, "Opened SQL input");
         app.focus = Focus::Sql;
         app.enter_input_mode(Mode::SqlInput, "SQL query against pv_data");
@@ -217,7 +217,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::Continue;
     }
 
-    // Handle input modes first
     match app.mode {
         Mode::SqlInput | Mode::OpenInput | Mode::ExportInput => {
             return handle_input_mode(app, key);
@@ -241,6 +240,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         Mode::Normal => {}
     }
 
+    handle_normal_mode_key(app, key)
+}
+
+fn handle_normal_mode_key(app: &mut App, key: KeyEvent) -> Action {
     if matches!(key.code, KeyCode::Tab) {
         app.next_focus();
         return Action::Continue;
@@ -272,9 +275,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     if ctrl_char(key, 'f') {
-        if app.engine.is_some() {
+        if app.require_engine() {
             app.log_started(OperationKind::FieldSelect, "Opened field selection");
-            app.meta_scroll = 0;
+            app.field_select_cursor = 0;
             app.mode = Mode::FieldSelect;
         } else {
             app.set_message("Open a file first (press Ctrl+P)", true);
@@ -327,7 +330,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     if ctrl_char(key, 'y') {
-        if app.engine.is_some() {
+        if app.require_engine() {
             match app.load_metadata() {
                 Ok(_) => {
                     app.log_succeeded(OperationKind::Metadata, "Opened metadata view");
@@ -362,63 +365,44 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     match key.code {
-        KeyCode::Down => {
-            if app.cursor_visible {
-                if let Err(e) = app.move_cursor(1, 0) {
-                    app.set_message(format!("Scroll error: {}", e), true);
-                }
-            } else {
-                app.row_scroll = app.row_scroll.saturating_add(1);
-            }
-            app.log_succeeded(OperationKind::Scroll, "Scrolled rows down");
-        }
-        KeyCode::Up => {
-            if app.cursor_visible {
-                if let Err(e) = app.move_cursor(-1, 0) {
-                    app.set_message(format!("Scroll error: {}", e), true);
-                }
-            } else {
-                app.row_scroll = app.row_scroll.saturating_sub(1);
-            }
-            app.log_succeeded(OperationKind::Scroll, "Scrolled rows up");
-        }
-        KeyCode::Right => {
-            if app.cursor_visible {
-                if let Err(e) = app.move_cursor(0, 1) {
-                    app.set_message(format!("Scroll error: {}", e), true);
-                }
-            } else {
-                let prev = app.visible_col_start;
-                app.col_scroll = app.col_scroll.saturating_add(1);
-                app.ensure_column_window();
-                if app.visible_col_start != prev
-                    && let Err(e) = app.reload()
-                {
-                    app.set_message(format!("Scroll error: {}", e), true);
-                }
-            }
-            app.log_succeeded(OperationKind::Scroll, "Scrolled columns right");
-        }
-        KeyCode::Left => {
-            if app.cursor_visible {
-                if let Err(e) = app.move_cursor(0, -1) {
-                    app.set_message(format!("Scroll error: {}", e), true);
-                }
-            } else {
-                let prev = app.visible_col_start;
-                app.col_scroll = app.col_scroll.saturating_sub(1);
-                app.ensure_column_window();
-                if app.visible_col_start != prev
-                    && let Err(e) = app.reload()
-                {
-                    app.set_message(format!("Scroll error: {}", e), true);
-                }
-            }
-            app.log_succeeded(OperationKind::Scroll, "Scrolled columns left");
-        }
+        KeyCode::Down => handle_scroll_or_cursor(app, 1, 0, "Scrolled rows down"),
+        KeyCode::Up => handle_scroll_or_cursor(app, -1, 0, "Scrolled rows up"),
+        KeyCode::Right => handle_scroll_or_cursor(app, 0, 1, "Scrolled columns right"),
+        KeyCode::Left => handle_scroll_or_cursor(app, 0, -1, "Scrolled columns left"),
         _ => {}
     }
     Action::Continue
+}
+
+fn handle_scroll_or_cursor(app: &mut App, row_delta: isize, col_delta: isize, log_msg: &str) {
+    if app.cursor_visible {
+        if let Err(e) = app.move_cursor(row_delta, col_delta) {
+            app.set_message(format!("Scroll error: {}", e), true);
+        }
+    } else {
+        if row_delta != 0 {
+            app.row_scroll = if row_delta > 0 {
+                app.row_scroll.saturating_add(row_delta as usize)
+            } else {
+                app.row_scroll.saturating_sub((-row_delta) as usize)
+            };
+        }
+        if col_delta != 0 {
+            let prev = app.visible_col_start;
+            app.col_scroll = if col_delta > 0 {
+                app.col_scroll.saturating_add(col_delta as usize)
+            } else {
+                app.col_scroll.saturating_sub((-col_delta) as usize)
+            };
+            app.ensure_column_window();
+            if app.visible_col_start != prev
+                && let Err(e) = app.reload()
+            {
+                app.set_message(format!("Scroll error: {}", e), true);
+            }
+        }
+    }
+    app.log_succeeded(OperationKind::Scroll, log_msg);
 }
 
 fn handle_input_mode(app: &mut App, key: KeyEvent) -> Action {
