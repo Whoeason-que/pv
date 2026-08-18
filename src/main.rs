@@ -7,7 +7,6 @@ mod ui;
 use std::io::{self, stdout};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -18,75 +17,75 @@ use ratatui::backend::CrosstermBackend;
 
 use crate::app::{App, DEFAULT_SQL, Focus, Mode, OperationKind};
 
-/// A cross-platform terminal viewer for Apache Parquet files.
-#[derive(Parser, Debug)]
-#[command(name = "pv", version, about)]
-struct Args {
-    #[command(subcommand)]
-    command: Option<Command>,
+const ABOUT: &str = "A cross-platform terminal viewer for Apache Parquet files.";
 
-    /// Path to a parquet file or folder to open on launch.
-    path: Option<String>,
-}
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Open a parquet file or folder.
-    Open { path: String },
-    /// Print version and exit.
+enum CliAction {
+    Open(Option<String>),
     Version,
-    /// Manage this executable.
-    #[command(name = "self")]
-    SelfCmd {
-        #[command(subcommand)]
-        command: SelfCommand,
-    },
+    SelfUpdate { dev: bool },
 }
 
-#[derive(Subcommand, Debug)]
-enum SelfCommand {
-    /// Build and install from source.
-    Update {
-        /// Use the current source tree via cargo install --path.
-        #[arg(long)]
-        dev: bool,
-    },
+fn parse_args() -> Result<CliAction> {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    match args.as_slice() {
+        [] => Ok(CliAction::Open(None)),
+        ["-h"] | ["--help"] => {
+            print_help();
+            std::process::exit(0);
+        }
+        ["-V"] | ["--version"] => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
+        }
+        ["version"] => Ok(CliAction::Version),
+        ["open", path] => Ok(CliAction::Open(Some(path.to_string()))),
+        ["self", "update", "--dev"] => Ok(CliAction::SelfUpdate { dev: true }),
+        ["self", "update"] => Ok(CliAction::SelfUpdate { dev: false }),
+        [path] if !path.starts_with('-') => Ok(CliAction::Open(Some(path.to_string()))),
+        _ => {
+            print_help();
+            anyhow::bail!("Invalid arguments")
+        }
+    }
+}
+
+fn print_help() {
+    println!(
+        "pv {}\n{}\n\nUSAGE:\n    pv [PATH]\n\nCOMMANDS:\n    open <PATH>        Open a parquet file or folder\n    version            Print version and exit\n    self update [--dev] Build and install from source\n\nOPTIONS:\n    -h, --help         Print help\n    -V, --version      Print version",
+        env!("CARGO_PKG_VERSION"),
+        ABOUT
+    );
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
-    match &args.command {
-        Some(Command::Version) => {
+    match parse_args()? {
+        CliAction::Version => {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some(Command::SelfCmd { command }) => dispatch_self(command),
-        Some(Command::Open { path }) => run_tui(Some(path)),
-        None => run_tui(args.path.as_ref()),
+        CliAction::SelfUpdate { dev } => dispatch_self(dev),
+        CliAction::Open(path) => run_tui(path.as_ref()),
     }
 }
 
-fn dispatch_self(cmd: &SelfCommand) -> Result<()> {
-    match cmd {
-        SelfCommand::Update { dev } => {
-            if *dev {
-                println!("Building and installing pv from source...");
-                let status = std::process::Command::new("cargo")
-                    .args(["install", "--path", env!("CARGO_MANIFEST_DIR")])
-                    .stdout(std::process::Stdio::inherit())
-                    .stderr(std::process::Stdio::inherit())
-                    .status()
-                    .context("Failed to run cargo install")?;
-                if !status.success() {
-                    anyhow::bail!("cargo install failed");
-                }
-                println!("\x1b[32m Completed\x1b[0m");
-            } else {
-                anyhow::bail!("Release mode not implemented. Use --dev to build from source.");
-            }
-            Ok(())
+fn dispatch_self(dev: bool) -> Result<()> {
+    if dev {
+        println!("Building and installing pv from source...");
+        let status = std::process::Command::new("cargo")
+            .args(["install", "--path", env!("CARGO_MANIFEST_DIR")])
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+            .context("Failed to run cargo install")?;
+        if !status.success() {
+            anyhow::bail!("cargo install failed");
         }
+        println!("\x1b[32m Completed\x1b[0m");
+    } else {
+        anyhow::bail!("Release mode not implemented. Use --dev to build from source.");
     }
+    Ok(())
 }
 
 fn run_tui(path: Option<&String>) -> Result<()> {
