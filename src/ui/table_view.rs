@@ -60,7 +60,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                                 (false, false) => Style::default(),
                             };
                         }
-                        Cell::from(row.get(col_index).cloned().unwrap_or_default()).style(style)
+                        Cell::from(row.get(col_index).map(|s| s.as_str()).unwrap_or_default())
+                            .style(style)
                     })
                     .collect();
                 Row::new(cells)
@@ -129,15 +130,7 @@ fn local_col_scroll(app: &App) -> usize {
 }
 
 fn column_content_width(app: &App, index: usize) -> usize {
-    let header_len = header_label(app, index).chars().count();
-    let max_cell_len = app
-        .rows
-        .iter()
-        .take(50)
-        .map(|r| r.get(index).map(|c| c.chars().count()).unwrap_or(0))
-        .max()
-        .unwrap_or(0);
-    (header_len.max(max_cell_len).clamp(4, 40)) + 1
+    app.column_widths.get(index).copied().unwrap_or(12)
 }
 
 fn compute_widths(

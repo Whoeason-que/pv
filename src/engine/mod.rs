@@ -158,7 +158,7 @@ impl ParquetEngine {
         push_sort_clause(&mut query, sort, selected_fields.len())?;
         query.push_str(&format!(" LIMIT {} OFFSET {}", limit.max(0), offset.max(0)));
 
-        let mut result = run_query(&self.conn, &query)?;
+        let mut result = run_query(&self.conn, &query, limit as usize)?;
         result.headers = selected_fields.to_vec();
         Ok(result)
     }
@@ -175,7 +175,7 @@ impl ParquetEngine {
         let col_count = query_column_count(&self.conn, &query)?;
         push_sort_clause(&mut query, sort, col_count)?;
         query.push_str(&format!(" LIMIT {} OFFSET {}", limit.max(0), offset.max(0)));
-        run_query(&self.conn, &query)
+        run_query(&self.conn, &query, limit as usize)
     }
 
     pub fn count_sql(&self, sql: &str) -> Result<i64> {
@@ -196,7 +196,7 @@ fn register_source_view(conn: &Connection, read_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_query(conn: &Connection, query: &str) -> Result<QueryResult> {
+fn run_query(conn: &Connection, query: &str, capacity_hint: usize) -> Result<QueryResult> {
     let mut stmt = conn.prepare(query)?;
     let mut rows = stmt.query([])?;
     let stmt = rows
@@ -205,7 +205,7 @@ fn run_query(conn: &Connection, query: &str) -> Result<QueryResult> {
     let col_count = stmt.column_count();
     let headers = stmt.column_names();
 
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(capacity_hint.min(100_000));
     while let Some(row) = rows.next()? {
         let mut values = Vec::with_capacity(col_count);
         for i in 0..col_count {

@@ -104,6 +104,8 @@ pub struct App {
     pub rows: Vec<Vec<String>>,
     /// Column headers for current selection.
     pub headers: Vec<String>,
+    /// Cached content widths per column (aligned with `headers`).
+    pub column_widths: Vec<usize>,
     pub visible_col_start: usize,
 
     pub mode: Mode,
@@ -158,6 +160,7 @@ impl App {
             sort: None,
             rows: Vec::new(),
             headers: Vec::new(),
+            column_widths: Vec::new(),
             visible_col_start: 0,
             mode: Mode::Normal,
             focus: Focus::Table,
@@ -247,6 +250,7 @@ impl App {
             if self.selected_fields.is_empty() {
                 self.rows.clear();
                 self.headers.clear();
+                self.column_widths.clear();
                 return Ok(());
             }
             invalidate_sort_if_stale(&mut self.sort, &self.selected_fields);
@@ -267,6 +271,7 @@ impl App {
             self.headers = result.headers;
             self.rows = result.rows;
         }
+        self.refresh_column_widths();
 
         self.row_scroll = 0;
         self.cursor_row = 0;
@@ -290,6 +295,34 @@ impl App {
             .saturating_add(COLUMN_QUERY_WINDOW_SIZE)
             .min(self.selected_fields.len());
         self.selected_fields[self.visible_col_start..end].to_vec()
+    }
+
+    /// Recompute cached column content widths from the current headers/rows.
+    fn refresh_column_widths(&mut self) {
+        let table_mode = self.is_table_mode();
+        let window_start = self.visible_col_start;
+        let sorted_index = self.sort.as_ref().map(|s| s.column_index);
+        self.column_widths = self
+            .headers
+            .iter()
+            .enumerate()
+            .map(|(i, header)| {
+                let global = if table_mode { window_start + i } else { i };
+                let label_len = match sorted_index {
+                    Some(idx) if idx == global => header.chars().count() + 2,
+                    _ => header.chars().count(),
+                };
+                let max_cell_len = self
+                    .rows
+                    .iter()
+                    .take(50)
+                    .filter_map(|r| r.get(i))
+                    .map(|c| c.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                label_len.max(max_cell_len).clamp(4, 40) + 1
+            })
+            .collect();
     }
 
     pub fn ensure_column_window(&mut self) {

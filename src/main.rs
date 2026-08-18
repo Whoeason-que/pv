@@ -131,24 +131,21 @@ fn run_tui(path: Option<&String>) -> Result<()> {
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+    let mut needs_redraw = true;
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
-
-        if !event::poll(std::time::Duration::from_millis(100))? {
-            continue;
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && matches!(handle_key(app, key), Action::Quit)
+            {
+                break;
+            }
+            needs_redraw = true;
         }
 
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-
-        match handle_key(app, key) {
-            Action::Continue => {}
-            Action::Quit => break,
+        if needs_redraw {
+            terminal.draw(|f| ui::draw(f, app))?;
+            needs_redraw = false;
         }
     }
     Ok(())
