@@ -1,5 +1,5 @@
-use parquet_tui::engine::{ParquetEngine, SortDirection, SortSpec, make_column_safe};
-use parquet_tui::export;
+use pv::engine::{ParquetEngine, SortDirection, SortSpec, make_column_safe};
+use pv::export;
 
 fn testdata(path: &str) -> String {
     format!("{}/testdata/{}", env!("CARGO_MANIFEST_DIR"), path)

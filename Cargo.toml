@@ -1,13 +1,9 @@
 [package]
-name = "parquet-tui"
+name = "pv"
 version = "26.8.3"
 edition = "2024"
 description = "A cross-platform terminal viewer for Apache Parquet files"
 license = "GPL-3.0"
-
-[[bin]]
-name = "pv"
-path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.30"
