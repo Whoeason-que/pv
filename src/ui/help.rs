@@ -11,7 +11,7 @@ pub fn draw(f: &mut Frame, area: Rect) {
     f.render_widget(Clear, popup);
 
     let help_text = vec![
-        ("parquet-tui", true),
+        ("pv", true),
         (
             "A cross-platform terminal viewer for Apache Parquet files.",
             false,
@@ -44,7 +44,7 @@ pub fn draw(f: &mut Frame, area: Rect) {
             "Tip: pass a parquet file path as a CLI argument to open directly.",
             false,
         ),
-        ("     e.g. parquet-tui data.parquet", false),
+        ("     e.g. pv data.parquet", false),
     ];
 
     let lines: Vec<ratatui::text::Line> = help_text

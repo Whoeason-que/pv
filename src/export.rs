@@ -46,17 +46,16 @@ fn export_json(headers: &[String], rows: &[Vec<String>], path: &Path) -> Result<
 }
 
 fn export_xlsx(headers: &[String], rows: &[Vec<String>], path: &Path) -> Result<()> {
-    let mut workbook = rust_xlsxwriter::Workbook::new_from_path(path);
+    let mut workbook = rust_xlsxwriter::Workbook::new();
     let worksheet = workbook.add_worksheet();
-    let format = rust_xlsxwriter::Format::default();
     for (c, header) in headers.iter().enumerate() {
-        worksheet.write_string(0, c as u16, header, &format)?;
+        worksheet.write_string(0, c as u16, header)?;
     }
     for (r, row) in rows.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
-            worksheet.write_string((r + 1) as u32, c as u16, cell, &format)?;
+            worksheet.write_string((r + 1) as u32, c as u16, cell)?;
         }
     }
-    workbook.close()?;
+    workbook.save(path)?;
     Ok(())
 }

@@ -20,7 +20,7 @@ use crate::app::{App, DEFAULT_SQL, Focus, Mode, OperationKind};
 
 /// A cross-platform terminal viewer for Apache Parquet files.
 #[derive(Parser, Debug)]
-#[command(name = "parquet-tui", version, about)]
+#[command(name = "pv", version, about)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -70,7 +70,7 @@ fn dispatch_self(cmd: &SelfCommand) -> Result<()> {
     match cmd {
         SelfCommand::Update { dev } => {
             if *dev {
-                println!("Building and installing parquet-tui from source...");
+                println!("Building and installing pv from source...");
                 let status = std::process::Command::new("cargo")
                     .args(["install", "--path", env!("CARGO_MANIFEST_DIR")])
                     .stdout(std::process::Stdio::inherit())

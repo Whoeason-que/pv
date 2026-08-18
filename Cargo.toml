@@ -1,14 +1,18 @@
 [package]
 name = "parquet-tui"
-version = "26.6.0"
+version = "26.8.3"
 edition = "2024"
 description = "A cross-platform terminal viewer for Apache Parquet files"
 license = "GPL-3.0"
 
+[[bin]]
+name = "pv"
+path = "src/main.rs"
+
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29.0"
-duckdb = { version = "1.1", features = ["bundled"] }
+duckdb = { version = "1.10", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 thiserror = "2"
@@ -16,9 +20,9 @@ clap = { version = "4", features = ["derive"] }
 csv = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rust_xlsxwriter = "0.8"
+rust_xlsxwriter = "0.98"
 arboard = "3"
-directories = "5"
+directories = "6"
 chrono = "0.4"
 
 [profile.release]

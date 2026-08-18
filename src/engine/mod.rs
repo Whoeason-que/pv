@@ -357,11 +357,13 @@ fn format_value(v: &duckdb::types::Value) -> String {
         Value::USmallInt(i) => i.to_string(),
         Value::UInt(i) => i.to_string(),
         Value::UBigInt(i) => i.to_string(),
+        Value::UHugeInt(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Double(f) => f.to_string(),
         Value::Decimal(d) => d.to_string(),
         Value::Text(s) => s.clone(),
         Value::Blob(b) => format!("<blob {} bytes>", b.len()),
+        Value::Geometry(wkb) => format!("<geometry {} bytes>", wkb.len()),
         Value::Date32(days) => {
             if let Some(epoch) = NaiveDate::from_ymd_opt(1970, 1, 1)
                 && let Some(date) = epoch.checked_add_signed(chrono::Duration::days(*days as i64))
@@ -427,6 +429,7 @@ fn format_value(v: &duckdb::types::Value) -> String {
         }
         Value::Enum(s) => s.clone(),
         Value::Union(inner) => format!("union({})", format_value(inner)),
+        other => format!("{other:?}"),
     }
 }
 
